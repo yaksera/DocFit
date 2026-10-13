@@ -1,0 +1,67 @@
+# Production stack: docker compose up -d --build
+# Needs a .env next to this file (copy .env.example). Set DOMAIN for HTTPS.
+x-app: &app
+  build: .
+  image: docfit:latest
+  env_file: .env
+  environment:
+    DATABASE_URL: postgres://docfit:${POSTGRES_PASSWORD:-docfit}@db:5432/docfit
+    REDIS_URL: redis://redis:6379/0
+    DOCFIT_STORAGE: /data/storage
+  volumes:
+    - storage:/data/storage
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_started
+  restart: unless-stopped
+
+services:
+  web:
+    <<: *app
+
+  worker:
+    <<: *app
+    command: celery -A docfit worker -l info --concurrency ${WORKER_CONCURRENCY:-2} --max-tasks-per-child 50
+
+  beat:
+    <<: *app
+    command: celery -A docfit beat -l info --schedule /tmp/celerybeat-schedule
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: docfit
+      POSTGRES_USER: docfit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-docfit}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docfit"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - web
+    restart: unless-stopped
+
+volumes:
+  storage:
+  pgdata:
+  caddy_data:
